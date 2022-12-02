@@ -6,10 +6,11 @@ import warnings
 from scipy.linalg import fractional_matrix_power
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import normalize
+import matplotlib.pylab as plt
 
-problem_set = ['enlight_hard.mps', 'neos859080.mps']
+problem_set = ['fiber.mps.gz', 'timtab1.mps.gz', 'rout.mps.gz']
 
-miplib_dir = "MIPLIB 2017/"
+miplib_dir = "MIPLIB 2003/"
 
 laplacian_types = ['default', 'symmetric', 'random-walk']
 graph_types = ['row-net', 'row-col-net']
@@ -17,20 +18,23 @@ graph_types = ['row-net', 'row-col-net']
 
 def get_adjacency_matrix(G):
     # make sure that both scipy and networkx modules are updated to latest version
-    return nx.adjacency_matrix(G)
+    return nx.adjacency_matrix(G).toarray()
 
 
 def get_degree_matrix(G):
-    return np.diag([d for _, d in G.degree])
+    return np.diag([d for _, d in G.degree(weight='weight')])
+
+def check_symmetric(a, rtol=1e-05, atol=1e-08):
+    return np.allclose(a, a.T, rtol=rtol, atol=atol)
 
 
 def get_eigen_features(mat):
     # get first 'K' smallest eigen values and corresponding eigen vectors
-    eigenvalues, eigenvectors = np.linalg.eig(mat)
+    eigenvalues, eigenvectors = np.linalg.eigh(mat)
 
-    sorted_ids = eigenvalues.argsort()
-    eigenvectors = eigenvectors[sorted_ids]
-    eigenvalues = eigenvalues[sorted_ids]
+    # sorted_ids = eigenvalues.argsort()
+    # eigenvectors = eigenvectors[sorted_ids]
+    # eigenvalues = eigenvalues[sorted_ids]
 
     return eigenvalues, eigenvectors
 
@@ -39,7 +43,7 @@ class Instance:
 
     def __init__(self, name):
         model = gp.read(f"{miplib_dir}{name}")
-        self.A = model.getA().todense()  # Query the linear constraint matrix of the model
+        self.A = model.getA().toarray()  # Query the linear constraint matrix of the model
         self.m, self.n = self.A.shape  # m = number of constraints; n = number of variables
         self.G_row_net = nx.Graph()
         self.G_row_col_net = nx.Graph()
@@ -54,10 +58,13 @@ class Instance:
         # Two nodes are connected if there exists a constraint where both of these variables have non-zero coefficients
         nodes = range(self.n)
         self.G_row_net.add_nodes_from(nodes)
+        count_non_zeros = np.count_nonzero(self.A, axis=1)
+        # count_non_zeros[count_non_zeros > 0.6*self.n] = 0
 
         for v1, v2 in itertools.combinations(nodes, 2):
-            if np.any(np.multiply(self.A[:, v1], self.A[:, v2]) != 0):
-                self.G_row_net.add_edge(v1, v2)
+            weight = np.sum(np.where(np.multiply(self.A[:, v1], self.A[:, v2])!=0, 1/count_non_zeros, 0))
+            if weight > 0:
+                self.G_row_net.add_edge(v1, v2, weight=weight)
 
         if len(list(nx.isolates(self.G_row_net))) > 0:
             warnings.warn("Graph contains isolated nodes")
@@ -92,7 +99,11 @@ class Instance:
             U = normalize(U, norm='l2', axis=1)
 
         kmeans = KMeans(n_clusters=K).fit(U)
-        return kmeans
+        print(kmeans.n_iter_)
+
+        A_dwr = self.get_rearranged_matrix(kmeans.labels_, graph_type)
+
+        return A_dwr
 
     def gen_graph_laplacians(self, graph_type='row-net', overwrite=False):
         # graph type in ['row-net', 'row-col-net']
@@ -107,12 +118,66 @@ class Instance:
         if graph_type not in self.L or overwrite:
             self.L[graph_type] = {}
             self.L[graph_type][laplacian_types[0]] = L  # default
-            self.L[graph_type][laplacian_types[1]] = fractional_matrix_power(D, -0.5) @ L \
-                                                     @ fractional_matrix_power(D, 0.5)  # symmetric
-            self.L[graph_type][laplacian_types[2]] = np.linalg.inv(D) @ L  # r-w
+            self.L[graph_type][laplacian_types[1]] = np.identity(D.shape[0]) - \
+                                                     fractional_matrix_power(D, -0.5) @ W @ fractional_matrix_power(D, -0.5)  # symmetric
+            self.L[graph_type][laplacian_types[2]] = np.identity(D.shape[0]) - np.linalg.inv(D) @ W  # r-w
+
+    def get_rearranged_matrix(self, labels, graph_type='row-net'):
+
+        A_dwr = self.A.copy()
+        if graph_type == 'row-net':
+
+            labelled_nodes = np.array(sorted(zip(labels, range(self.n))))
+            # print(labelled_nodes)
+            A_dwr = A_dwr[:, labelled_nodes[:, 1]]  # rearranging columns by clusters
+            A_abs_sum_rows = np.sum(np.abs(self.A), axis=1).flatten()
+
+            # Rearrange rows
+            unique_labels, unique_indices = np.unique(labelled_nodes[:, 0], return_index=True)
+            var_clusters = np.split(labelled_nodes[:, 1], unique_indices[1:])
+            # print(var_clusters)
+
+            row_cluster = []
+            for i in range(len(unique_labels)):
+                vars_in_cluster = var_clusters[i]
+                rows_in_cluster = np.argwhere(np.sum(np.abs(self.A[:, vars_in_cluster]), axis=1).flatten() == A_abs_sum_rows)
+                row_cluster.append(rows_in_cluster.flatten())
+
+            print("var cluster sizes")
+            for each in var_clusters:
+                print(each.shape, end=', ')
+            print()
+
+            print("cons cluster sizes")
+            row_order = []
+            for each in row_cluster:
+                print(each.shape, end=', ')
+                row_order.extend(each)
+            print()
+
+            linking_rows = set(range(self.m)) - set(row_order)
+            row_order.extend(linking_rows)
+
+            A_dwr = A_dwr[row_order, :]
+
+        return A_dwr
+
 
 
 out = {}
-for problem in problem_set:
+for problem in problem_set[:1]:
     instance = Instance(problem)
-    out[problem] = instance.spectral_clustering(graph_types[0], laplacian_types[0], K=5)
+    print(f"matrix size = {instance.m}, {instance.n}")
+    init_matrix = instance.A
+    out[problem] = instance.spectral_clustering(graph_types[0], laplacian_types[1], K=4)
+    rearranged_matrix = out[problem]
+
+    plt.spy(init_matrix)
+    plt.show()
+
+    plt.spy(rearranged_matrix)
+    plt.show()
+
+
+
+
