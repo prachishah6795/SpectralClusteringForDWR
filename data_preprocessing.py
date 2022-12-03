@@ -1,16 +1,18 @@
+import os
+import pickle
 import gurobipy as gp
 import networkx as nx
 import itertools
 import numpy as np
 import warnings
+import pandas as pd
 from scipy.linalg import fractional_matrix_power
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import normalize
 import matplotlib.pylab as plt
 
-problem_set = ['rout.mps.gz', 'fiber.mps.gz', 'timtab1.mps.gz']# , '10teams.mps.gz']
-
-miplib_dir = "MIPLIB 2003/"
+miplib_dir = "MIPLIB Instances/"
+problem_set = os.listdir(miplib_dir)
 
 laplacian_types = ['default', 'symmetric', 'random-walk']
 graph_types = ['row-net', 'row-col-net']
@@ -104,11 +106,10 @@ class Instance:
             U = normalize(U, norm='l2', axis=1)
 
         kmeans = KMeans(n_clusters=K).fit(U)
-        print(kmeans.n_iter_)
 
-        A_dwr = self.get_rearranged_matrix(kmeans.labels_, graph_type)
+        A_dwr, row_sizes, col_sizes = self.get_rearranged_matrix(kmeans.labels_, graph_type)
 
-        return A_dwr
+        return A_dwr, row_sizes, col_sizes
 
     def gen_graph_laplacians(self, graph_type='row-net', overwrite=False):
         # graph type in ['row-net', 'row-col-net']
@@ -147,20 +148,19 @@ class Instance:
                 rows_in_cluster = np.argwhere(np.sum(np.abs(self.A[:, vars_in_cluster]), axis=1).flatten() == A_abs_sum_rows)
                 row_cluster.append(rows_in_cluster.flatten())
 
-            print("var cluster sizes")
+            col_block_sizes = []
             for each in var_clusters:
-                print(each.shape, end=', ')
-            print()
+                col_block_sizes.append(each.size)
 
-            print("cons cluster sizes")
+            row_block_sizes = []
             row_order = []
             for each in row_cluster:
-                print(each.shape, end=', ')
+                row_block_sizes.append(each.size)
                 row_order.extend(each)
 
-            linking_rows = set(range(self.m)) - set(row_order)
-            row_order.extend(linking_rows)
-            print(len(linking_rows))
+            linking_cons = set(range(self.m)) - set(row_order)
+            row_order.extend(linking_cons)
+            row_block_sizes.append(len(linking_cons))
 
             A_dwr = A_dwr[row_order, :]
 
@@ -179,38 +179,80 @@ class Instance:
             linking_cons = set(c for c in range(self.m) if sum([c in cl for cl in cons_clusters]) >= 2)
 
             col_order = []
+            col_block_sizes = []
             for cl in var_clusters:
-                col_order.extend(set(cl) - linking_vars)
-                print(len(set(cl) - linking_vars), end=', ')
+                cluster = set(cl) - linking_vars
+                col_order.extend(cluster)
+                col_block_sizes.append(len(cluster))
             col_order.extend(linking_vars)
-            print(len(linking_vars))
+            col_block_sizes.append(len(linking_vars))
 
             row_order = []
+            row_block_sizes = []
             for cl in cons_clusters:
-                row_order.extend(set(cl) - linking_cons)
-                print(len(set(cl) - linking_cons), end=', ')
+                cluster = set(cl) - linking_cons
+                row_order.extend(cluster)
+                row_block_sizes.append(len(cluster))
             row_order.extend(linking_cons)
-            print(len(linking_cons))
+            row_block_sizes.append(len(linking_cons))
 
             A_dwr = A_dwr[row_order, :]
             A_dwr = A_dwr[:, col_order]
 
-        return A_dwr
+        return A_dwr, np.array(row_block_sizes), np.array(col_block_sizes)
 
 
 
-out = {}
-for problem, k in zip(problem_set, [4, 3, 2]):
+out = []
+
+for problem in problem_set:
+
     instance = Instance(problem)
-    print(f"matrix size = {instance.m}, {instance.n}")
     init_matrix = instance.A
-    out[problem] = instance.spectral_clustering(graph_types[1], laplacian_types[1], K=k)
-    rearranged_matrix = out[problem]
-
     plt.spy(init_matrix, markersize=1)
-    plt.show()
+    plt.savefig(f"{problem}.png")
+    plt.clf()
 
-    plt.spy(rearranged_matrix, markersize=1)
-    plt.show()
+    for laplacian in laplacian_types:
+        for graph in graph_types:
+            for k in range(2, 11):
+
+                dwr_matrix, row_sizes, col_sizes = instance.spectral_clustering(graph, laplacian, K=k)
+                row_sep = np.cumsum(row_sizes)
+                col_sep = np.cumsum(col_sizes)
+
+                assert row_sep[-1] == instance.m, "row sep compute error"
+                assert col_sep[-1] == instance.n, "col sep compute error"
+
+                m_l = row_sizes[-1]
+                n_l = col_sizes[-1] if graph == graph_types[1] else 0
+
+                pct_linking_cons = m_l/instance.m
+                pct_linking_vars = n_l/instance.n
+
+                border_area = (m_l*instance.n + instance.m*n_l - m_l*n_l)/(instance.m*instance.n)
+                block_areas = row_sizes[:k]*col_sizes[:k]
+                block_area_diff = np.max(block_areas)/np.min(block_areas)
+
+                out.append([dwr_matrix, problem.replace('.mps.gz', ''), laplacian, graph, k, pct_linking_cons, pct_linking_vars, border_area, block_area_diff])
+
+                plt.spy(dwr_matrix, markersize=1)
+                plt.savefig(f"{problem}_{laplacian}_{graph}_{k}.png")
+                plt.clf()
+
+with open("dwr_results.pickle", "wb") as handle:
+    pickle.dump(out, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+out_df = pd.DataFrame([data[1:] for data in out],
+                      columns=['Problem',
+                               'Laplacian',
+                               'Graph',
+                               'K',
+                               '% Linking Constraints',
+                               '% Linking Variables',
+                               'Relative Border Area',
+                               'Block Size Ratio'])
+
+with pd.ExcelWriter('dwr_output.xlsx', mode='w') as writer:
+    out_df.to_excel(writer)
