@@ -12,6 +12,11 @@ from sklearn.preprocessing import normalize
 import matplotlib.pylab as plt
 import matplotlib.patches as patches
 
+miplib_dir = "MIPLIB Instances/"
+problem_set = os.listdir(miplib_dir)
+
+laplacian_types = ['default', 'symmetric', 'random-walk']
+graph_types = ['row-net', 'row-col-net']
 
 
 def get_adjacency_matrix(G):
@@ -61,7 +66,7 @@ class Instance:
         # count_non_zeros[count_non_zeros > 0.6*self.n] = 0
 
         for v1, v2 in itertools.combinations(nodes, 2):
-            weight = np.sum(np.where(np.multiply(self.A[:, v1], self.A[:, v2]) != 0, 1 / count_non_zeros, 0))
+            weight = np.sum(np.where(np.multiply(self.A[:, v1], self.A[:, v2])!=0, 1/count_non_zeros, 0))
             if weight > 0:
                 self.G_row_net.add_edge(v1, v2, weight=weight)
 
@@ -80,9 +85,9 @@ class Instance:
 
         for v1, v2 in itertools.combinations(nodes, 2):
             if v1[0] == v2[0]:
-                self.G_row_col_net.add_edge(v1, v2, weight=1 / count_non_zeros_rows[v1[0]])
+                self.G_row_col_net.add_edge(v1, v2, weight=1/count_non_zeros_rows[v1[0]])
             if v1[1] == v2[1]:
-                self.G_row_col_net.add_edge(v1, v2, weight=1 / count_non_zeros_cols[v1[1]])
+                self.G_row_col_net.add_edge(v1, v2, weight=1/count_non_zeros_cols[v1[1]])
 
         if len(list(nx.isolates(self.G_row_col_net))) > 0:
             warnings.warn("Graph contains isolated nodes")
@@ -122,8 +127,7 @@ class Instance:
             self.L[graph_type] = {}
             self.L[graph_type][laplacian_types[0]] = L  # default
             self.L[graph_type][laplacian_types[1]] = np.identity(D.shape[0]) - \
-                                                     fractional_matrix_power(D, -0.5) @ W @ fractional_matrix_power(D,
-                                                                                                                    -0.5)  # symmetric
+                                                     fractional_matrix_power(D, -0.5) @ W @ fractional_matrix_power(D, -0.5)  # symmetric
             self.L[graph_type][laplacian_types[2]] = np.identity(D.shape[0]) - np.linalg.inv(D) @ W  # r-w
 
     def get_rearranged_matrix(self, labels, graph_type='row-net'):
@@ -143,8 +147,7 @@ class Instance:
             row_cluster = []
             for i in range(len(unique_labels)):
                 vars_in_cluster = var_clusters[i]
-                rows_in_cluster = np.argwhere(
-                    np.sum(np.abs(self.A[:, vars_in_cluster]), axis=1).flatten() == A_abs_sum_rows)
+                rows_in_cluster = np.argwhere(np.sum(np.abs(self.A[:, vars_in_cluster]), axis=1).flatten() == A_abs_sum_rows)
                 row_cluster.append(rows_in_cluster.flatten())
 
             col_block_sizes = []
@@ -211,6 +214,9 @@ if __name__ == "__main__":
     out = []
 
     for problem in problem_set:
+results = []
+output = {}
+for problem in problem_set:
 
         instance = Instance(problem)
         init_matrix = instance.A
@@ -224,6 +230,16 @@ if __name__ == "__main__":
                     dwr_matrix, row_sizes, col_sizes = instance.spectral_clustering(graph, laplacian, K=k)
                     row_sep = np.cumsum(row_sizes)
                     col_sep = np.cumsum(col_sizes)
+    for laplacian in laplacian_types:
+        for graph in graph_types:
+            for k in range(2, 11):
+                print(problem, laplacian, graph, k)
+
+                dwr_matrix, row_sizes, col_sizes = instance.spectral_clustering(graph, laplacian, K=k)
+                output[f"{problem}_{laplacian}_{graph}_{k}.png"] = (dwr_matrix, row_sizes, col_sizes)
+
+                row_sep = np.cumsum(row_sizes)
+                col_sep = np.cumsum(col_sizes)
 
                     assert row_sep[-1] == instance.m, "row sep compute error"
                     assert col_sep[-1] == instance.n, "col sep compute error"
@@ -250,6 +266,7 @@ if __name__ == "__main__":
                                                  facecolor='powderblue')
                         ax.add_patch(rect)
                         xy = (col_sep[x], row_sep[x])
+                results.append([problem.replace('.mps.gz', ''), laplacian, graph, k, pct_linking_cons, pct_linking_vars, border_area, block_area_diff])
 
                     # Linking constraints
                     rect = patches.Rectangle((0, row_sep[-2]), instance.n, row_sizes[-1], linewidth=1, edgecolor='blue',
@@ -266,18 +283,19 @@ if __name__ == "__main__":
                     # plt.savefig(f"{problem}_{laplacian}_{graph}_{k}.png")
                     plt.clf()
 
-    with open("dwr_results.pickle", "wb") as handle:
-        pickle.dump(out, handle, protocol=pickle.HIGHEST_PROTOCOL)
+with open("dwr_output.pickle", "wb") as handle:
+    pickle.dump(output, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    out_df = pd.DataFrame([data[1:] for data in out],
-                          columns=['Problem',
-                                   'Laplacian',
-                                   'Graph',
-                                   'K',
-                                   '% Linking Constraints',
-                                   '% Linking Variables',
-                                   'Relative Border Area',
-                                   'Block Size Ratio'])
 
-    with pd.ExcelWriter('dwr_output.xlsx', mode='w') as writer:
-        out_df.to_excel(writer)
+results_df = pd.DataFrame(results,
+                      columns=['Problem',
+                               'Laplacian',
+                               'Graph',
+                               'K',
+                               '% Linking Constraints',
+                               '% Linking Variables',
+                               'Relative Border Area',
+                               'Block Size Ratio'])
+
+with pd.ExcelWriter('dwr_results.xlsx', mode='w') as writer:
+    results_df.to_excel(writer)
