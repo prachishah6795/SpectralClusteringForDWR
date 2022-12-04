@@ -213,10 +213,10 @@ if __name__ == "__main__":
 
     out = []
 
+
+    results = []
+    output = {}
     for problem in problem_set:
-results = []
-output = {}
-for problem in problem_set:
 
         instance = Instance(problem)
         init_matrix = instance.A
@@ -227,19 +227,13 @@ for problem in problem_set:
         for laplacian in laplacian_types:
             for graph in graph_types:
                 for k in range(2, 11):
+                    print(problem, laplacian, graph, k)
+
                     dwr_matrix, row_sizes, col_sizes = instance.spectral_clustering(graph, laplacian, K=k)
+                    output[(problem, laplacian, graph, k)] = (dwr_matrix, row_sizes, col_sizes)
+
                     row_sep = np.cumsum(row_sizes)
                     col_sep = np.cumsum(col_sizes)
-    for laplacian in laplacian_types:
-        for graph in graph_types:
-            for k in range(2, 11):
-                print(problem, laplacian, graph, k)
-
-                dwr_matrix, row_sizes, col_sizes = instance.spectral_clustering(graph, laplacian, K=k)
-                output[f"{problem}_{laplacian}_{graph}_{k}.png"] = (dwr_matrix, row_sizes, col_sizes)
-
-                row_sep = np.cumsum(row_sizes)
-                col_sep = np.cumsum(col_sizes)
 
                     assert row_sep[-1] == instance.m, "row sep compute error"
                     assert col_sep[-1] == instance.n, "col sep compute error"
@@ -254,8 +248,9 @@ for problem in problem_set:
                     block_areas = row_sizes[:k] * col_sizes[:k]
                     block_area_diff = np.max(block_areas) / np.min(block_areas)
 
-                    out.append([dwr_matrix, problem.replace('.mps.gz', ''), laplacian, graph, k, pct_linking_cons,
-                                pct_linking_vars, border_area, block_area_diff])
+                    results.append(
+                        [problem.replace('.mps.gz', ''), laplacian, graph, k, pct_linking_cons, pct_linking_vars,
+                         border_area, block_area_diff])
 
                     # For plotting
                     fig, ax = plt.subplots()
@@ -266,7 +261,6 @@ for problem in problem_set:
                                                  facecolor='powderblue')
                         ax.add_patch(rect)
                         xy = (col_sep[x], row_sep[x])
-                results.append([problem.replace('.mps.gz', ''), laplacian, graph, k, pct_linking_cons, pct_linking_vars, border_area, block_area_diff])
 
                     # Linking constraints
                     rect = patches.Rectangle((0, row_sep[-2]), instance.n, row_sizes[-1], linewidth=1, edgecolor='blue',
@@ -279,23 +273,23 @@ for problem in problem_set:
                                                  edgecolor='blue', facecolor='powderblue')
                         ax.add_patch(rect)
 
-                    plt.show()
-                    # plt.savefig(f"{problem}_{laplacian}_{graph}_{k}.png")
+                    # plt.show()
+                    plt.savefig(f"{problem}_{laplacian}_{graph}_{k}.png")
                     plt.clf()
 
-with open("dwr_output.pickle", "wb") as handle:
-    pickle.dump(output, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    with open("dwr_output.pickle", "wb") as handle:
+        pickle.dump(output, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-results_df = pd.DataFrame(results,
-                      columns=['Problem',
-                               'Laplacian',
-                               'Graph',
-                               'K',
-                               '% Linking Constraints',
-                               '% Linking Variables',
-                               'Relative Border Area',
-                               'Block Size Ratio'])
+    results_df = pd.DataFrame(results,
+                          columns=['Problem',
+                                   'Laplacian',
+                                   'Graph',
+                                   'K',
+                                   '% Linking Constraints',
+                                   '% Linking Variables',
+                                   'Relative Border Area',
+                                   'Block Size Ratio'])
 
-with pd.ExcelWriter('dwr_results.xlsx', mode='w') as writer:
-    results_df.to_excel(writer)
+    with pd.ExcelWriter('dwr_results.xlsx', mode='w') as writer:
+        results_df.to_excel(writer)
