@@ -4,7 +4,7 @@ import gurobipy as gp
 import networkx as nx
 import itertools
 import numpy as np
-import warnings
+from pathlib import Path
 import pandas as pd
 from scipy.linalg import fractional_matrix_power
 from sklearn.cluster import KMeans
@@ -36,10 +36,6 @@ def get_eigen_features(mat):
     # get first 'K' smallest eigen values and corresponding eigen vectors
     eigenvalues, eigenvectors = np.linalg.eigh(mat)
 
-    # sorted_ids = eigenvalues.argsort()
-    # eigenvectors = eigenvectors[sorted_ids]
-    # eigenvalues = eigenvalues[sorted_ids]
-
     return eigenvalues, eigenvectors
 
 
@@ -66,12 +62,16 @@ class Instance:
         # count_non_zeros[count_non_zeros > 0.6*self.n] = 0
 
         for v1, v2 in itertools.combinations(nodes, 2):
-            weight = np.sum(np.where(np.multiply(self.A[:, v1], self.A[:, v2])!=0, 1/count_non_zeros, 0))
+            weight = np.sum(np.where(np.multiply(self.A[:, v1], self.A[:, v2])!=0, 1/count_non_zeros**2, 0))
             if weight > 0:
                 self.G_row_net.add_edge(v1, v2, weight=weight)
 
-        if len(list(nx.isolates(self.G_row_net))) > 0:
-            warnings.warn("Graph contains isolated nodes")
+        isolated_nodes = list(nx.isolates(self.G_row_net))
+        if len(isolated_nodes) > 0:
+            print(f"Graph contains {len(isolated_nodes)} isolated nodes. Removing them.")
+            self.A = np.delete(self.A, isolated_nodes, 1)
+            self.n -= 1
+            self.G_row_net.remove_nodes_from(list(nx.isolates(self.G_row_net)))
 
     def generate_row_col_net_graph(self):
         # Each non-zero coefficient a_ij of matrix A defines a vertex vij. Two nodes are connected if
@@ -85,12 +85,12 @@ class Instance:
 
         for v1, v2 in itertools.combinations(nodes, 2):
             if v1[0] == v2[0]:
-                self.G_row_col_net.add_edge(v1, v2, weight=1/count_non_zeros_rows[v1[0]])
+                self.G_row_col_net.add_edge(v1, v2, weight=1/count_non_zeros_rows[v1[0]]**2)
             if v1[1] == v2[1]:
-                self.G_row_col_net.add_edge(v1, v2, weight=1/count_non_zeros_cols[v1[1]])
+                self.G_row_col_net.add_edge(v1, v2, weight=1/count_non_zeros_cols[v1[1]]**2)
 
         if len(list(nx.isolates(self.G_row_col_net))) > 0:
-            warnings.warn("Graph contains isolated nodes")
+            print(f"Graph contains {len(list(nx.isolates(self.G_row_col_net)))} isolated nodes")
 
     def spectral_clustering(self, graph_type, laplacian_type, K=5):
         assert graph_type in graph_types, 'check input'
@@ -212,25 +212,37 @@ if __name__ == "__main__":
     graph_types = ['row-net', 'row-col-net']
 
     out = []
-
-
     results = []
-    output = {}
+    pred_k = []
+    # output = {}
     for problem in problem_set:
 
         instance = Instance(problem)
-        init_matrix = instance.A
-        plt.spy(init_matrix, markersize=1)
-        plt.savefig(f"{problem}.png")
-        plt.clf()
+        problem = problem.replace('.mps.gz', '')
+        Path(f"Images/{problem}/").mkdir(exist_ok=True, parents=True)
 
-        for laplacian in laplacian_types:
-            for graph in graph_types:
+        init_matrix = instance.A
+        fig, ax = plt.subplots()
+        fig.set_size_inches(10, 6)
+        ax.spy(init_matrix, markersize=1, mec='black', aspect='auto')
+        plt.savefig(f"Images/{problem}/{problem}.png")
+        plt.close()
+
+        for graph in graph_types:
+            instance.gen_graph_laplacians(graph)
+
+            for laplacian in laplacian_types:
+                L = instance.L[graph][laplacian]
+                w, v = get_eigen_features(L)
+
+                w_diff = w[2:11] - w[1:10]
+                k_hat = 2 + np.where(w_diff == w_diff.max())[0]
+
                 for k in range(2, 11):
                     print(problem, laplacian, graph, k)
 
                     dwr_matrix, row_sizes, col_sizes = instance.spectral_clustering(graph, laplacian, K=k)
-                    output[(problem, laplacian, graph, k)] = (dwr_matrix, row_sizes, col_sizes)
+                    # output[(problem, laplacian, graph, k)] = (dwr_matrix, row_sizes, col_sizes)
 
                     row_sep = np.cumsum(row_sizes)
                     col_sep = np.cumsum(col_sizes)
@@ -249,12 +261,18 @@ if __name__ == "__main__":
                     block_area_diff = np.max(block_areas) / np.min(block_areas)
 
                     results.append(
-                        [problem.replace('.mps.gz', ''), laplacian, graph, k, pct_linking_cons, pct_linking_vars,
+                        [problem, laplacian, graph, k, pct_linking_cons, pct_linking_vars,
                          border_area, block_area_diff])
+
+                    if k in k_hat:
+                        pred_k.append(
+                            [problem, laplacian, graph, k, pct_linking_cons, pct_linking_vars,
+                             border_area, block_area_diff])
 
                     # For plotting
                     fig, ax = plt.subplots()
-                    ax.spy(dwr_matrix, markersize=1, mec='black')
+                    fig.set_size_inches(10, 6)
+                    ax.spy(dwr_matrix, markersize=1, mec='black', aspect='auto')
                     xy = (0, 0)
                     for x in range(k):
                         rect = patches.Rectangle(xy, col_sizes[x], row_sizes[x], linewidth=1, edgecolor='blue',
@@ -274,22 +292,33 @@ if __name__ == "__main__":
                         ax.add_patch(rect)
 
                     # plt.show()
-                    plt.savefig(f"{problem}_{laplacian}_{graph}_{k}.png")
-                    plt.clf()
+                    plt.savefig(f"Images/{problem}/{problem}_{laplacian}_{graph}_{k}.png")
+                    plt.close()
 
-    with open("dwr_output.pickle", "wb") as handle:
-        pickle.dump(output, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    # with open("dwr_output_2.pickle", "wb") as handle:
+    #     pickle.dump(output, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
     results_df = pd.DataFrame(results,
-                          columns=['Problem',
-                                   'Laplacian',
-                                   'Graph',
-                                   'K',
-                                   '% Linking Constraints',
-                                   '% Linking Variables',
-                                   'Relative Border Area',
-                                   'Block Size Ratio'])
+                              columns=['Problem',
+                                       'Laplacian',
+                                       'Graph',
+                                       'K',
+                                       '% Linking Constraints',
+                                       '% Linking Variables',
+                                       'Relative Border Area',
+                                       'Block Size Ratio'])
 
-    with pd.ExcelWriter('dwr_results.xlsx', mode='w') as writer:
-        results_df.to_excel(writer)
+    predi_k_df = pd.DataFrame(pred_k,
+                              columns=['Problem',
+                                       'Laplacian',
+                                       'Graph',
+                                       'K',
+                                       '% Linking Constraints',
+                                       '% Linking Variables',
+                                       'Relative Border Area',
+                                       'Block Size Ratio'])
+
+    with pd.ExcelWriter('dwr_results_2.xlsx', mode='w') as writer:
+        results_df.to_excel(writer, sheet_name='Results')
+        predi_k_df.to_excel(writer, sheet_name='PredictedK')
