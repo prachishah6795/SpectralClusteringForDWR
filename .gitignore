@@ -5,8 +5,6 @@
 .idea/misc.xml
 .idea/inspectionProfiles/profiles_settings.xml
 .idea/Implementation.iml
-*.png
-*.xlsx
 fiber.mps.gz_random-walk_row-net_10.png
 fiber.mps.gz_random-walk_row-net_8.png
 fiber.mps.gz_random-walk_row-net_9.png

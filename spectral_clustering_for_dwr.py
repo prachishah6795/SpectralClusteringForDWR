@@ -295,10 +295,6 @@ if __name__ == "__main__":
                     plt.savefig(f"Images/{problem}/{problem}_{laplacian}_{graph}_{k}.png")
                     plt.close()
 
-    # with open("dwr_output_2.pickle", "wb") as handle:
-    #     pickle.dump(output, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-
     results_df = pd.DataFrame(results,
                               columns=['Problem',
                                        'Laplacian',
@@ -319,6 +315,6 @@ if __name__ == "__main__":
                                        'Relative Border Area',
                                        'Block Size Ratio'])
 
-    with pd.ExcelWriter('dwr_results_2.xlsx', mode='w') as writer:
+    with pd.ExcelWriter('dwr_results.xlsx', mode='w') as writer:
         results_df.to_excel(writer, sheet_name='Results')
         predi_k_df.to_excel(writer, sheet_name='PredictedK')
